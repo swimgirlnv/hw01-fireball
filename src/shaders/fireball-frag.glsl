@@ -19,16 +19,25 @@ uniform float u_CoreHot;
 uniform float u_GlowStrength;
 uniform int   u_Pass;          // 0=core, 1=flames, 2=glow
 
+// base (CPU) uniforms this shader expects
+uniform float u_FlameLift;
+uniform float u_CoreLowAmp;
+
+// audio uniforms (0 when Fireball mode is off)
+uniform float u_AudioBass;
+uniform float u_AudioMid;
+uniform float u_AudioTreble;
+uniform float u_AudioBeat;
+
 out vec4 out_Col;
 
-// ----------------- small helpers -----------------
+// ----------------- helpers -----------------
 vec3 satBoost(vec3 c, float s){
   float l = dot(c, vec3(0.299, 0.587, 0.114));
   return mix(vec3(l), c, 1.0 + s);
 }
 vec3 gamma(vec3 c, float g){ return pow(max(c, 0.0), vec3(g)); }
 
-// ----------------- tiny noise for core cracks -----------------
 float h31(vec3 p){
   p = fract(p * 0.3183099 + vec3(0.1,0.2,0.3));
   p += dot(p, p.yzx + 19.19);
@@ -66,51 +75,45 @@ vec3 firePalette_RYOB(float t){
   else if (t <= 0.6666) { float u = smoothstep(0.3333, 0.6666, t); return mix(Y, O, u); }
   else { float u = smoothstep(0.6666, 1.0, t); return mix(O, R, u); }
 }
-vec3 magmaRock(float t){ // dark rock body
+vec3 magmaRock(float t){
   t = clamp(t, 0.0, 1.0);
   vec3 d1 = vec3(0.07, 0.04, 0.02);
   vec3 d2 = vec3(0.18, 0.10, 0.05);
   return mix(d1, d2, smoothstep(0.0, 1.0, t));
 }
-vec3 magmaGlowColor(){
-  return vec3(3.0, 1.0, 0.2);
-}
+vec3 magmaGlowColor(){ return vec3(3.0, 1.0, 0.2); }
 
 // ----------------- core magma with glowing cracks -----------------
-vec3 magmaCracks(vec3 pos){
-  // fbm field for cracks: low values = crack centers
-  float n  = fbm(pos * 3.0, 5);
-  float n2 = fbm(pos * 8.0 + 7.3, 3);
+vec3 magmaCracks(vec3 pos, float coreLow){
+  float n  = fbm(pos * (3.0 + coreLow * 1.5), 5);
+  float n2 = fbm(pos * (8.0 + coreLow * 3.0) + 7.3, 3);
   float f  = 0.7 * n + 0.3 * n2;
 
-  // Crack core (inverted): 1 at crack center → 0 on rock
   float crackCore = 1.0 - smoothstep(0.22, 0.28, f);
-
   float crackHalo = 1.0 - smoothstep(0.28, 0.46, f);
 
-  // Dark rock body
   vec3 rock = magmaRock(0.4 + 0.6 * n);
-
-  // Animate crack intensity slightly
   float flick = 1.0 + 0.5 * sin(u_Time * 4.0 + pos.y * 10.0) * cos(u_Time * 4.0 + pos.x * 10.0) * sin(u_Time * 4.0 + pos.z * 10.0);
-
-  // Overexposed glow color ( > 1.0 ), scaled by core + halo
   vec3 glowCol = magmaGlowColor() * flick;
-
   vec3 emissive = glowCol * (1.5 * crackCore + 0.6 * crackHalo);
-
-  vec3 col = rock + emissive;
-
-  return col;
+  return rock + emissive;
 }
 
 void main(){
-  // ---------- PASS 0: Core (magma with cracks) ----------
-  if (u_Pass == 0) {
-    vec3 col = magmaCracks(v_Pos);
-    col = mix(col, vec3(1.0), u_Wash * 0.18 * (1.0 - v_Radial));
+  // ---- audio-reactive controls ----
+  float flameLiftDyn = u_FlameLift   + u_AudioBass    * 0.60;
+  float exposureDyn  = u_Exposure    + u_AudioBeat    * 0.75;
+  float grainDyn     = u_GrainAmp    + u_AudioTreble  * 0.45;
+  float coreLowDyn   = u_CoreLowAmp  + u_AudioMid     * 0.35;
 
-    vec3 lit = col * (0.25 + 0.9 * clamp(u_Exposure, 0.0, 1.5));
+  // **global size gain** (constant >1 grows flames; audio gives extra push)
+  float sizeGain = 1.45 + 0.60 * u_AudioBass + 0.25 * u_AudioBeat;
+
+  // ---------- PASS 0: Core ----------
+  if (u_Pass == 0) {
+    vec3 col = magmaCracks(v_Pos, coreLowDyn);
+    col = mix(col, vec3(1.0), u_Wash * 0.18 * (1.0 - v_Radial));
+    vec3 lit = col * (0.25 + 0.9 * clamp(exposureDyn, 0.0, 1.8));
     col = lit / (1.0 + lit);
     out_Col = vec4(clamp(col, 0.0, 1.0), 1.0);
     return;
@@ -118,13 +121,21 @@ void main(){
 
   // ---------- shared drivers for flames & glow ----------
   float base = 0.48 + 0.58 * v_Height + 0.18 * v_UpDot;
-  float wob  = 0.05 * sin(u_Time * 2.6 + dot(v_Pos, vec3(0.7, 0.4, 0.2)));
-  float grain= (v_Grain - 0.5) * u_GrainAmp;
-  int   steps= max(u_BandCount, 2);
-  float tBand= floor((base + wob + grain) * float(steps)) / float(steps);
-  float t    = mix(base, tBand, 0.80);
 
-  // ---------- PASS 1: Flames (colorful, top-biased, no white) ----------
+  // bigger lift & thicker center column
+  float lift = sizeGain * flameLiftDyn
+             * 1.15
+             * (1.0 - 0.65 * v_Radial)
+             * (0.65 + 0.35 * clamp(v_UpDot, 0.0, 1.0));
+  base += lift;
+
+  float wob   = 0.05 * sin(u_Time * 2.6 + dot(v_Pos, vec3(0.7, 0.4, 0.2)));
+  float grain = (v_Grain - 0.5) * grainDyn;
+  int   steps = max(u_BandCount, 2);
+  float tBand = floor((base + wob + grain) * float(steps)) / float(steps);
+  float t     = mix(base, tBand, 0.80);
+
+  // ---------- PASS 1: Flames ----------
   if (u_Pass == 1) {
     vec3 col = firePalette_RYOB(t);
 
@@ -133,28 +144,33 @@ void main(){
     float blueAmt = u_CoreHot * heat * pow(clamp(v_UpDot, 0.0, 1.0), 1.2);
     col = mix(col, vec3(0.12, 0.25, 1.00), 0.35 * blueAmt);
 
+    // artistic boosts
     col = gamma(col, 0.9);
     col = satBoost(col, 0.22);
-
     col = mix(col, vec3(1.0), u_Wash * 0.10 * (1.0 - v_Radial));
 
-    vec3 lit = col * (0.25 + 1.25 * clamp(u_Exposure, 0.0, 1.5));
+    // brighter (audio-reactive) exposure
+    vec3 lit = col * (0.25 + 1.25 * clamp(exposureDyn, 0.0, 2.2));
     col = lit / (1.0 + lit);
     col = clamp(col, 0.0, 1.0);
 
-    float alpha = 0.18 * v_Rim * pow(clamp(v_UpDot, 0.0, 1.0), 1.6);
+    float rimWiden = smoothstep(0.35, 1.00, v_Rim);        // start earlier
+    float upShape  = pow(clamp(v_UpDot, 0.0, 1.0), 1.25);  // slightly softer
+    float alpha    = 0.32 * sizeGain * rimWiden * upShape; // was 0.18 * v_Rim * pow(...,1.6)
+    alpha = clamp(alpha, 0.0, 1.0);
 
     out_Col = vec4(col, alpha);
     return;
   }
 
-  // ---------- PASS 2: Glow (broad halo, top rim, additive) ----------
+  // ---------- PASS 2: Glow ----------
   float crown = pow(clamp(v_UpDot, 0.0, 1.0), 2.0);
-  float halo  = smoothstep(0.60, 1.00, v_Rim);
-  float a     = u_GlowStrength * 0.22 * crown * halo;
+  float halo  = smoothstep(0.45, 1.00, v_Rim); // widen the halo inwards
+  float a     = u_GlowStrength * 0.30 * sizeGain * crown * halo; // stronger base glow
+  a *= (1.0 + 1.00 * u_AudioBass); // breathe with bass
 
   vec3 glowC  = firePalette_RYOB(0.75 + 0.25 * v_UpDot);
-  vec3 glit   = glowC * (0.25 + 1.25 * clamp(u_Exposure, 0.0, 1.5));
+  vec3 glit   = glowC * (0.25 + 1.25 * clamp(exposureDyn, 0.0, 2.2));
   glit = glit / (1.0 + glit);
   glit = clamp(glit, 0.0, 1.0);
 
