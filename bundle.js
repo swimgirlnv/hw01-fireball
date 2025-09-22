@@ -11520,7 +11520,7 @@ class ShaderProgram {
   \****************************************/
 /***/ ((module) => {
 
-module.exports = "#version 300 es\nprecision highp float;\nprecision highp int;\n\nin vec3  v_Pos;\nin float v_Core;\nin float v_Height;\nin float v_Radial;\nin float v_Rim;\nin float v_Grain;\nin float v_UpDot;\n\nuniform float u_Time;\nuniform int   u_BandCount;\nuniform float u_Exposure;\nuniform float u_Wash;\nuniform float u_GrainAmp;\nuniform float u_CoreHot;\nuniform float u_GlowStrength;\nuniform int   u_Pass;          // 0=core, 1=flames, 2=glow\n\nout vec4 out_Col;\n\n// ----------------- small helpers -----------------\nvec3 satBoost(vec3 c, float s){\n  float l = dot(c, vec3(0.299, 0.587, 0.114));\n  return mix(vec3(l), c, 1.0 + s);\n}\nvec3 gamma(vec3 c, float g){ return pow(max(c, 0.0), vec3(g)); }\n\n// ----------------- tiny noise for core cracks -----------------\nfloat h31(vec3 p){\n  p = fract(p * 0.3183099 + vec3(0.1,0.2,0.3));\n  p += dot(p, p.yzx + 19.19);\n  return fract(p.x * p.y * p.z * 93.733);\n}\n\nfloat vnoise(vec3 p){\n  vec3 i=floor(p), f=fract(p);\n  vec3 u=f*f*(3.0-2.0*f);\n  float n000=h31(i+vec3(0,0,0)), n100=h31(i+vec3(1,0,0));\n  float n010=h31(i+vec3(0,1,0)), n110=h31(i+vec3(1,1,0));\n  float n001=h31(i+vec3(0,0,1)), n101=h31(i+vec3(1,0,1));\n  float n011=h31(i+vec3(0,1,1)), n111=h31(i+vec3(1,1,1));\n  float nx00=mix(n000,n100,u.x), nx10=mix(n010,n110,u.x);\n  float nxy0=mix(nx00,nx10,u.y);\n  float nx01=mix(n001,n101,u.x), nx11=mix(n011,n111,u.x);\n  float nxy1=mix(nx01,nx11,u.y);\n  return mix(nxy0,nxy1,u.z);\n}\n\nfloat fbm(vec3 p, int oct){\n  float a=0.5, f=1.0, s=0.0;\n  for(int i=0;i<8;i++){ if(i>=oct) break; s += a * vnoise(p * f); f *= 2.02; a *= 0.5; }\n  return s;\n}\n\n// ----------------- palettes -----------------\nvec3 firePalette_RYOB(float t){\n  t = clamp(t, 0.0, 1.0);\n  const vec3 B = vec3(0.12, 0.25, 1.00);\n  const vec3 Y = vec3(1.00, 0.90, 0.00);\n  const vec3 O = vec3(1.00, 0.50, 0.00);\n  const vec3 R = vec3(0.95, 0.10, 0.05);\n  if (t <= 0.3333) { float u = smoothstep(0.0, 0.3333, t); return mix(B, Y, u); }\n  else if (t <= 0.6666) { float u = smoothstep(0.3333, 0.6666, t); return mix(Y, O, u); }\n  else { float u = smoothstep(0.6666, 1.0, t); return mix(O, R, u); }\n}\nvec3 magmaRock(float t){ // dark rock body\n  t = clamp(t, 0.0, 1.0);\n  vec3 d1 = vec3(0.07, 0.04, 0.02);\n  vec3 d2 = vec3(0.18, 0.10, 0.05);\n  return mix(d1, d2, smoothstep(0.0, 1.0, t));\n}\nvec3 magmaGlowColor(){\n  return vec3(3.0, 1.0, 0.2);\n}\n\n// ----------------- core magma with glowing cracks -----------------\nvec3 magmaCracks(vec3 pos){\n  // fbm field for cracks: low values = crack centers\n  float n  = fbm(pos * 3.0, 5);\n  float n2 = fbm(pos * 8.0 + 7.3, 3);\n  float f  = 0.7 * n + 0.3 * n2;\n\n  // Crack core (inverted): 1 at crack center → 0 on rock\n  float crackCore = 1.0 - smoothstep(0.22, 0.28, f);\n\n  float crackHalo = 1.0 - smoothstep(0.28, 0.46, f);\n\n  // Dark rock body\n  vec3 rock = magmaRock(0.4 + 0.6 * n);\n\n  // Animate crack intensity slightly\n  float flick = 1.0 + 0.5 * sin(u_Time * 4.0 + pos.y * 10.0) * cos(u_Time * 4.0 + pos.x * 10.0) * sin(u_Time * 4.0 + pos.z * 10.0);\n\n  // Overexposed glow color ( > 1.0 ), scaled by core + halo\n  vec3 glowCol = magmaGlowColor() * flick;\n\n  vec3 emissive = glowCol * (1.5 * crackCore + 0.6 * crackHalo);\n\n  vec3 col = rock + emissive;\n\n  return col;\n}\n\nvoid main(){\n  // ---------- PASS 0: Core (magma with cracks) ----------\n  if (u_Pass == 0) {\n    vec3 col = magmaCracks(v_Pos);\n    col = mix(col, vec3(1.0), u_Wash * 0.18 * (1.0 - v_Radial));\n\n    vec3 lit = col * (0.25 + 0.9 * clamp(u_Exposure, 0.0, 1.5));\n    col = lit / (1.0 + lit);\n    out_Col = vec4(clamp(col, 0.0, 1.0), 1.0);\n    return;\n  }\n\n  // ---------- shared drivers for flames & glow ----------\n  float base = 0.48 + 0.58 * v_Height + 0.18 * v_UpDot;\n  float wob  = 0.05 * sin(u_Time * 2.6 + dot(v_Pos, vec3(0.7, 0.4, 0.2)));\n  float grain= (v_Grain - 0.5) * u_GrainAmp;\n  int   steps= max(u_BandCount, 2);\n  float tBand= floor((base + wob + grain) * float(steps)) / float(steps);\n  float t    = mix(base, tBand, 0.80);\n\n  // ---------- PASS 1: Flames (colorful, top-biased, no white) ----------\n  if (u_Pass == 1) {\n    vec3 col = firePalette_RYOB(t);\n\n    float flick   = 0.5 + 0.5 * sin(u_Time * 5.0 + v_Pos.y * 10.0);\n    float heat    = clamp(v_Core * flick, 0.0, 1.0);\n    float blueAmt = u_CoreHot * heat * pow(clamp(v_UpDot, 0.0, 1.0), 1.2);\n    col = mix(col, vec3(0.12, 0.25, 1.00), 0.35 * blueAmt);\n\n    col = gamma(col, 0.9);\n    col = satBoost(col, 0.22);\n\n    col = mix(col, vec3(1.0), u_Wash * 0.10 * (1.0 - v_Radial));\n\n    vec3 lit = col * (0.25 + 1.25 * clamp(u_Exposure, 0.0, 1.5));\n    col = lit / (1.0 + lit);\n    col = clamp(col, 0.0, 1.0);\n\n    float alpha = 0.18 * v_Rim * pow(clamp(v_UpDot, 0.0, 1.0), 1.6);\n\n    out_Col = vec4(col, alpha);\n    return;\n  }\n\n  // ---------- PASS 2: Glow (broad halo, top rim, additive) ----------\n  float crown = pow(clamp(v_UpDot, 0.0, 1.0), 2.0);\n  float halo  = smoothstep(0.60, 1.00, v_Rim);\n  float a     = u_GlowStrength * 0.22 * crown * halo;\n\n  vec3 glowC  = firePalette_RYOB(0.75 + 0.25 * v_UpDot);\n  vec3 glit   = glowC * (0.25 + 1.25 * clamp(u_Exposure, 0.0, 1.5));\n  glit = glit / (1.0 + glit);\n  glit = clamp(glit, 0.0, 1.0);\n\n  out_Col = vec4(glit, a);\n}"
+module.exports = "#version 300 es\nprecision highp float;\nprecision highp int;\n\nin vec3  v_Pos;\nin float v_Core;\nin float v_Height;\nin float v_Radial;\nin float v_Rim;\nin float v_Grain;\nin float v_UpDot;\n\nuniform float u_Time;\nuniform int   u_BandCount;\nuniform float u_Exposure;\nuniform float u_Wash;\nuniform float u_GrainAmp;\nuniform float u_CoreHot;\nuniform float u_GlowStrength;\nuniform int   u_Pass;          // 0=core, 1=flames, 2=glow\n\n// base (CPU) uniforms this shader expects\nuniform float u_FlameLift;\nuniform float u_CoreLowAmp;\n\n// audio uniforms (0 when Fireball mode is off)\nuniform float u_AudioBass;\nuniform float u_AudioMid;\nuniform float u_AudioTreble;\nuniform float u_AudioBeat;\n\nout vec4 out_Col;\n\n// ----------------- helpers -----------------\nvec3 satBoost(vec3 c, float s){\n  float l = dot(c, vec3(0.299, 0.587, 0.114));\n  return mix(vec3(l), c, 1.0 + s);\n}\nvec3 gamma(vec3 c, float g){ return pow(max(c, 0.0), vec3(g)); }\n\nfloat h31(vec3 p){\n  p = fract(p * 0.3183099 + vec3(0.1,0.2,0.3));\n  p += dot(p, p.yzx + 19.19);\n  return fract(p.x * p.y * p.z * 93.733);\n}\n\nfloat vnoise(vec3 p){\n  vec3 i=floor(p), f=fract(p);\n  vec3 u=f*f*(3.0-2.0*f);\n  float n000=h31(i+vec3(0,0,0)), n100=h31(i+vec3(1,0,0));\n  float n010=h31(i+vec3(0,1,0)), n110=h31(i+vec3(1,1,0));\n  float n001=h31(i+vec3(0,0,1)), n101=h31(i+vec3(1,0,1));\n  float n011=h31(i+vec3(0,1,1)), n111=h31(i+vec3(1,1,1));\n  float nx00=mix(n000,n100,u.x), nx10=mix(n010,n110,u.x);\n  float nxy0=mix(nx00,nx10,u.y);\n  float nx01=mix(n001,n101,u.x), nx11=mix(n011,n111,u.x);\n  float nxy1=mix(nx01,nx11,u.y);\n  return mix(nxy0,nxy1,u.z);\n}\n\nfloat fbm(vec3 p, int oct){\n  float a=0.5, f=1.0, s=0.0;\n  for(int i=0;i<8;i++){ if(i>=oct) break; s += a * vnoise(p * f); f *= 2.02; a *= 0.5; }\n  return s;\n}\n\n// ----------------- palettes -----------------\nvec3 firePalette_RYOB(float t){\n  t = clamp(t, 0.0, 1.0);\n  const vec3 B = vec3(0.12, 0.25, 1.00);\n  const vec3 Y = vec3(1.00, 0.90, 0.00);\n  const vec3 O = vec3(1.00, 0.50, 0.00);\n  const vec3 R = vec3(0.95, 0.10, 0.05);\n  if (t <= 0.3333) { float u = smoothstep(0.0, 0.3333, t); return mix(B, Y, u); }\n  else if (t <= 0.6666) { float u = smoothstep(0.3333, 0.6666, t); return mix(Y, O, u); }\n  else { float u = smoothstep(0.6666, 1.0, t); return mix(O, R, u); }\n}\nvec3 magmaRock(float t){\n  t = clamp(t, 0.0, 1.0);\n  vec3 d1 = vec3(0.07, 0.04, 0.02);\n  vec3 d2 = vec3(0.18, 0.10, 0.05);\n  return mix(d1, d2, smoothstep(0.0, 1.0, t));\n}\nvec3 magmaGlowColor(){ return vec3(3.0, 1.0, 0.2); }\n\n// ----------------- core magma with glowing cracks -----------------\nvec3 magmaCracks(vec3 pos, float coreLow){\n  float n  = fbm(pos * (3.0 + coreLow * 1.5), 5);\n  float n2 = fbm(pos * (8.0 + coreLow * 3.0) + 7.3, 3);\n  float f  = 0.7 * n + 0.3 * n2;\n\n  float crackCore = 1.0 - smoothstep(0.22, 0.28, f);\n  float crackHalo = 1.0 - smoothstep(0.28, 0.46, f);\n\n  vec3 rock = magmaRock(0.4 + 0.6 * n);\n  float flick = 1.0 + 0.5 * sin(u_Time * 4.0 + pos.y * 10.0) * cos(u_Time * 4.0 + pos.x * 10.0) * sin(u_Time * 4.0 + pos.z * 10.0);\n  vec3 glowCol = magmaGlowColor() * flick;\n  vec3 emissive = glowCol * (1.5 * crackCore + 0.6 * crackHalo);\n  return rock + emissive;\n}\n\nvoid main(){\n  // ---- audio-reactive controls ----\n  float flameLiftDyn = u_FlameLift   + u_AudioBass    * 0.60;\n  float exposureDyn  = u_Exposure    + u_AudioBeat    * 0.75;\n  float grainDyn     = u_GrainAmp    + u_AudioTreble  * 0.45;\n  float coreLowDyn   = u_CoreLowAmp  + u_AudioMid     * 0.35;\n\n  // **global size gain** (constant >1 grows flames; audio gives extra push)\n  float sizeGain = 1.45 + 0.60 * u_AudioBass + 0.25 * u_AudioBeat;\n\n  // ---------- PASS 0: Core ----------\n  if (u_Pass == 0) {\n    vec3 col = magmaCracks(v_Pos, coreLowDyn);\n    col = mix(col, vec3(1.0), u_Wash * 0.18 * (1.0 - v_Radial));\n    vec3 lit = col * (0.25 + 0.9 * clamp(exposureDyn, 0.0, 1.8));\n    col = lit / (1.0 + lit);\n    out_Col = vec4(clamp(col, 0.0, 1.0), 1.0);\n    return;\n  }\n\n  // ---------- shared drivers for flames & glow ----------\n  float base = 0.48 + 0.58 * v_Height + 0.18 * v_UpDot;\n\n  // bigger lift & thicker center column\n  float lift = sizeGain * flameLiftDyn\n             * 1.15\n             * (1.0 - 0.65 * v_Radial)\n             * (0.65 + 0.35 * clamp(v_UpDot, 0.0, 1.0));\n  base += lift;\n\n  float wob   = 0.05 * sin(u_Time * 2.6 + dot(v_Pos, vec3(0.7, 0.4, 0.2)));\n  float grain = (v_Grain - 0.5) * grainDyn;\n  int   steps = max(u_BandCount, 2);\n  float tBand = floor((base + wob + grain) * float(steps)) / float(steps);\n  float t     = mix(base, tBand, 0.80);\n\n  // ---------- PASS 1: Flames ----------\n  if (u_Pass == 1) {\n    vec3 col = firePalette_RYOB(t);\n\n    float flick   = 0.5 + 0.5 * sin(u_Time * 5.0 + v_Pos.y * 10.0);\n    float heat    = clamp(v_Core * flick, 0.0, 1.0);\n    float blueAmt = u_CoreHot * heat * pow(clamp(v_UpDot, 0.0, 1.0), 1.2);\n    col = mix(col, vec3(0.12, 0.25, 1.00), 0.35 * blueAmt);\n\n    // artistic boosts\n    col = gamma(col, 0.9);\n    col = satBoost(col, 0.22);\n    col = mix(col, vec3(1.0), u_Wash * 0.10 * (1.0 - v_Radial));\n\n    // brighter (audio-reactive) exposure\n    vec3 lit = col * (0.25 + 1.25 * clamp(exposureDyn, 0.0, 2.2));\n    col = lit / (1.0 + lit);\n    col = clamp(col, 0.0, 1.0);\n\n    float rimWiden = smoothstep(0.35, 1.00, v_Rim);        // start earlier\n    float upShape  = pow(clamp(v_UpDot, 0.0, 1.0), 1.25);  // slightly softer\n    float alpha    = 0.32 * sizeGain * rimWiden * upShape; // was 0.18 * v_Rim * pow(...,1.6)\n    alpha = clamp(alpha, 0.0, 1.0);\n\n    out_Col = vec4(col, alpha);\n    return;\n  }\n\n  // ---------- PASS 2: Glow ----------\n  float crown = pow(clamp(v_UpDot, 0.0, 1.0), 2.0);\n  float halo  = smoothstep(0.45, 1.00, v_Rim); // widen the halo inwards\n  float a     = u_GlowStrength * 0.30 * sizeGain * crown * halo; // stronger base glow\n  a *= (1.0 + 1.00 * u_AudioBass); // breathe with bass\n\n  vec3 glowC  = firePalette_RYOB(0.75 + 0.25 * v_UpDot);\n  vec3 glit   = glowC * (0.25 + 1.25 * clamp(exposureDyn, 0.0, 2.2));\n  glit = glit / (1.0 + glit);\n  glit = clamp(glit, 0.0, 1.0);\n\n  out_Col = vec4(glit, a);\n}"
 
 /***/ }),
 
@@ -11620,6 +11620,15 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _Camera__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./Camera */ "./src/Camera.ts");
 /* harmony import */ var _globals__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./globals */ "./src/globals.ts");
 /* harmony import */ var _rendering_gl_ShaderProgram__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./rendering/gl/ShaderProgram */ "./src/rendering/gl/ShaderProgram.ts");
+var __awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 
 const Stats = __webpack_require__(/*! stats-js */ "./node_modules/stats-js/build/stats.min.js");
 
@@ -11663,14 +11672,45 @@ const defaults = {
     mouseOn: true,
     mouseStrength: 0.9,
     mouseFalloff: 0.35,
+    // Mode
+    fireball: false,
 };
-const controls = Object.assign({}, defaults);
+const audioDefaults = {
+    audioOn: true,
+    gain: 1.0,
+    smoothing: 0.7,
+    sensitivity: 1.35,
+    bassToFlameLift: 0.35,
+    bassToGlow: 0.65,
+    midToCoreLow: 0.25,
+    trebleToGrainHi: 0.3,
+    beatToExposure: 0.4,
+};
+const controls = Object.assign(Object.assign({}, defaults), audioDefaults);
 let gui;
 const folders = [];
 let icosphere;
 let square;
 let activeShape = null;
 let prevTess = defaults.tesselations;
+// --- Fireball mode state ---
+let fireballOn = false;
+// YouTube
+let ytApiReady = false;
+let ytPlayer = null;
+let ytContainer = null;
+// Audio capture + analyser
+let tabStream = null;
+let audioCtx = null;
+let analyser = null;
+let fft = null;
+// Fallback audio (mic / file)
+let fileAudioEl = null;
+// Simple audio levels
+let aBass = 0, aMid = 0, aTre = 0, aBeat = 0;
+let ema = 0; // rolling average for beat detect
+let lastBeatT = 0;
+const minBeatInterval = 0.26; // seconds
 // === Simple mouse orbit state ===
 const orbit = {
     dragging: false,
@@ -11695,6 +11735,347 @@ const mouseNDC = gl_matrix__WEBPACK_IMPORTED_MODULE_0__.fromValues(0, 0);
 function setActiveShape(s) {
     activeShape = s === "square" ? square : icosphere;
 }
+// ---- Create YouTube background container (behind canvas) ----
+function ensureYTBackground() {
+    if (ytContainer) {
+        ytContainer.style.display = "block";
+        return;
+    }
+    ytContainer = document.createElement("div");
+    ytContainer.id = "yt-bg";
+    Object.assign(ytContainer.style, {
+        position: "fixed",
+        inset: "0",
+        zIndex: "-1",
+        overflow: "hidden",
+        background: "black",
+        pointerEvents: "none",
+    });
+    document.body.appendChild(ytContainer);
+    const wrap = document.createElement("div"); // 16:9 cover
+    Object.assign(wrap.style, {
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%,-50%)",
+        width: "100vw",
+        height: "56.25vw",
+        minWidth: "177.77vh",
+        minHeight: "100vh",
+    });
+    wrap.id = "yt-wrap";
+    ytContainer.appendChild(wrap);
+}
+function loadYTAPI() {
+    return new Promise((resolve) => {
+        if (window.YT && window.YT.Player) {
+            ytApiReady = true;
+            resolve();
+            return;
+        }
+        const tag = document.createElement("script");
+        tag.src = "https://www.youtube.com/iframe_api";
+        window.onYouTubeIframeAPIReady = () => {
+            ytApiReady = true;
+            resolve();
+        };
+        document.head.appendChild(tag);
+    });
+}
+function startYouTube() {
+    return __awaiter(this, void 0, void 0, function* () {
+        ensureYTBackground();
+        yield loadYTAPI();
+        const wrap = document.getElementById("yt-wrap");
+        wrap.innerHTML = ""; // reset
+        ytPlayer = new window.YT.Player(wrap, {
+            width: "100%",
+            height: "100%",
+            videoId: "HMqgVXSvwGo",
+            playerVars: {
+                autoplay: 1,
+                controls: 0,
+                modestbranding: 1,
+                rel: 0,
+                showinfo: 0,
+                loop: 1,
+                playlist: "HMqgVXSvwGo",
+                origin: window.location.origin,
+            },
+            events: {
+                onReady: (e) => {
+                    try {
+                        e.target.setVolume(100);
+                    }
+                    catch (_a) { }
+                    try {
+                        e.target.playVideo();
+                    }
+                    catch (_b) { }
+                },
+            },
+        });
+    });
+}
+function stopYouTube() {
+    if (ytPlayer && ytPlayer.destroy) {
+        try {
+            ytPlayer.destroy();
+        }
+        catch (_a) { }
+        ytPlayer = null;
+    }
+    if (ytContainer)
+        ytContainer.style.display = "none";
+}
+function muteYouTube(mute) {
+    try {
+        if ((ytPlayer === null || ytPlayer === void 0 ? void 0 : ytPlayer.mute) && (ytPlayer === null || ytPlayer === void 0 ? void 0 : ytPlayer.unMute))
+            mute ? ytPlayer.mute() : ytPlayer.unMute();
+    }
+    catch (_a) { }
+}
+// ---------- Audio wiring (tab / mic / file) ----------
+function wireAnalyserFromStream(stream) {
+    return __awaiter(this, void 0, void 0, function* () {
+        tabStream = stream;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        yield audioCtx.resume().catch(() => { });
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = controls.smoothing;
+        const src = audioCtx.createMediaStreamSource(stream);
+        src.connect(analyser);
+        fft = new Uint8Array(analyser.frequencyBinCount);
+        // Stop if user ends capture
+        stream.getTracks().forEach((track) => {
+            track.addEventListener("ended", (_ev) => stopTabAudioCapture());
+        });
+    });
+}
+function startTabAudioCapture() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const md = navigator.mediaDevices;
+        const opts = {
+            video: false,
+            audio: { selfBrowserSurface: "include", suppressLocalAudioPlayback: false },
+            preferCurrentTab: true,
+        };
+        if (!md || typeof md.getDisplayMedia !== "function") {
+            console.warn("getDisplayMedia not available; auto-falling back to mic");
+            yield startMicCapture();
+            if (!analyser)
+                yield showAudioFallbackUI();
+            return;
+        }
+        try {
+            const stream = yield md.getDisplayMedia.call(md, opts);
+            const hasAudio = stream.getAudioTracks && stream.getAudioTracks().length > 0;
+            if (!hasAudio)
+                throw new Error("Tab capture returned no audio tracks");
+            yield wireAnalyserFromStream(stream);
+            muteYouTube(false); // use tab audio
+        }
+        catch (e) {
+            console.warn("getDisplayMedia failed:", e);
+            yield startMicCapture();
+            if (!analyser)
+                yield showAudioFallbackUI();
+        }
+    });
+}
+function startMicCapture() {
+    var _a, _b;
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            const stream = yield navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false,
+                },
+                video: false,
+            });
+            if (!stream)
+                return;
+            yield wireAnalyserFromStream(stream);
+            try {
+                (_a = ytPlayer === null || ytPlayer === void 0 ? void 0 : ytPlayer.unMute) === null || _a === void 0 ? void 0 : _a.call(ytPlayer);
+                (_b = ytPlayer === null || ytPlayer === void 0 ? void 0 : ytPlayer.setVolume) === null || _b === void 0 ? void 0 : _b.call(ytPlayer, 100);
+            }
+            catch (_c) { }
+        }
+        catch (e) {
+            console.warn("getUserMedia(mic) failed:", e);
+        }
+    });
+}
+function startFileAudio(file) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            if (!fileAudioEl) {
+                fileAudioEl = document.createElement("audio");
+                fileAudioEl.crossOrigin = "anonymous";
+                fileAudioEl.controls = false;
+                fileAudioEl.loop = true;
+                fileAudioEl.style.display = "none";
+                document.body.appendChild(fileAudioEl);
+            }
+            fileAudioEl.src = URL.createObjectURL(file);
+            yield fileAudioEl.play();
+            audioCtx = new (window.AudioContext ||
+                window.webkitAudioContext)();
+            yield audioCtx.resume().catch(() => { });
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 2048;
+            analyser.smoothingTimeConstant = controls.smoothing;
+            const src = audioCtx.createMediaElementSource(fileAudioEl);
+            src.connect(analyser);
+            fft = new Uint8Array(analyser.frequencyBinCount);
+            muteYouTube(true);
+        }
+        catch (e) {
+            console.warn("startFileAudio failed:", e);
+        }
+    });
+}
+function stopTabAudioCapture() {
+    if (tabStream) {
+        tabStream.getTracks().forEach((t) => t.stop());
+        tabStream = null;
+    }
+    if (audioCtx) {
+        audioCtx.close().catch(() => { });
+        audioCtx = null;
+    }
+    analyser = null;
+    fft = null;
+    aBass = aMid = aTre = aBeat = 0;
+    ema = 0;
+    lastBeatT = 0;
+    if (fileAudioEl) {
+        try {
+            fileAudioEl.pause();
+        }
+        catch (_a) { }
+    }
+}
+// ---------- Fallback mini-UI (mic / file) ----------
+let fbBar = null;
+function showAudioFallbackUI() {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (!fbBar) {
+            fbBar = document.createElement("div");
+            Object.assign(fbBar.style, {
+                position: "fixed",
+                left: "12px",
+                bottom: "12px",
+                zIndex: "1001",
+                background: "rgba(0,0,0,0.55)",
+                color: "#fff",
+                padding: "8px 10px",
+                borderRadius: "8px",
+                font: "12px/1.4 Inter, system-ui",
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
+            });
+            fbBar.textContent = "Audio source:";
+            const micBtn = document.createElement("button");
+            micBtn.textContent = "Use Microphone";
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = "audio/*";
+            fbBar.appendChild(micBtn);
+            fbBar.appendChild(fileInput);
+            document.body.appendChild(fbBar);
+            micBtn.addEventListener("click", () => __awaiter(this, void 0, void 0, function* () {
+                yield startMicCapture();
+                if (fbBar)
+                    fbBar.style.display = "none";
+            }));
+            fileInput.addEventListener("change", () => __awaiter(this, void 0, void 0, function* () {
+                if (!fileInput.files || !fileInput.files[0])
+                    return;
+                yield startFileAudio(fileInput.files[0]);
+                if (fbBar)
+                    fbBar.style.display = "none";
+            }));
+        }
+        else {
+            fbBar.style.display = "flex";
+        }
+    });
+}
+// ---------- Analysis (freq + RMS fallback) ----------
+function updateAudioLevels() {
+    if (!analyser || !audioCtx)
+        return;
+    if (!fft || fft.length !== analyser.frequencyBinCount) {
+        fft = new Uint8Array(analyser.frequencyBinCount);
+    }
+    analyser.smoothingTimeConstant = controls.smoothing;
+    analyser.getByteFrequencyData(fft);
+    const td = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(td);
+    let rmsSum = 0;
+    for (let i = 0; i < td.length; i++) {
+        const s = (td[i] - 128) / 128; // -1..1
+        rmsSum += s * s;
+    }
+    const rms = Math.sqrt(rmsSum / td.length); // 0..~1
+    const sr = audioCtx.sampleRate;
+    const binHz = sr / (2 * fft.length);
+    const band = (f0, f1) => {
+        const i0 = Math.max(0, Math.floor(f0 / binHz));
+        const i1 = Math.min(fft.length - 1, Math.ceil(f1 / binHz));
+        let sum = 0;
+        for (let i = i0; i <= i1; i++)
+            sum += fft[i];
+        return sum / Math.max(1, i1 - i0 + 1) / 255;
+    };
+    let bass = band(20, 150);
+    let mid = band(150, 2000);
+    let tre = band(2000, 10000);
+    const tiny = (bass + mid + tre) / 3 < 0.02;
+    if (tiny && rms > 0.01) {
+        bass = Math.min(1, rms * 2.2);
+        mid = Math.min(1, rms * 1.4);
+        tre = Math.min(1, rms * 0.9);
+    }
+    const nowE = bass * 1.0 + mid * 0.25; // beat energy
+    if (ema === 0)
+        ema = nowE;
+    const alpha = 0.15;
+    ema = (1 - alpha) * ema + alpha * nowE;
+    const t = audioCtx.currentTime;
+    const threshold = ema * Math.max(0.5, controls.sensitivity);
+    const canBeat = t - lastBeatT > minBeatInterval;
+    if (canBeat && nowE > threshold) {
+        lastBeatT = t;
+        aBeat = 1.0;
+    }
+    else {
+        aBeat = Math.max(0, aBeat - 3.5 * (1 / 60));
+    }
+    aBass = bass;
+    aMid = mid;
+    aTre = tre;
+    // Debug once per second
+    const now = performance.now();
+    window.__dbgT = window.__dbgT || 0;
+    if (now - window.__dbgT > 1000) {
+        window.__dbgT = now;
+        console.log("levels", {
+            bass: +aBass.toFixed(3),
+            mid: +aMid.toFixed(3),
+            tre: +aTre.toFixed(3),
+            beat: +aBeat.toFixed(2),
+            rms: +rms.toFixed(3),
+            tiny,
+        });
+    }
+}
 function loadScene() {
     icosphere = new _geometry_Icosphere__WEBPACK_IMPORTED_MODULE_4__["default"](gl_matrix__WEBPACK_IMPORTED_MODULE_1__.fromValues(0, 0, 0), 1, controls.tesselations);
     icosphere.create();
@@ -11707,7 +12088,9 @@ function main() {
     stats.setMode(0);
     document.body.appendChild(stats.domElement);
     const canvas = document.getElementById("canvas");
-    const gl = canvas.getContext("webgl2");
+    const gl = canvas.getContext("webgl2", {
+        alpha: true,
+    });
     if (!gl) {
         alert("WebGL 2 not supported!");
         return;
@@ -11724,12 +12107,13 @@ function main() {
         orbit.lastX = e.clientX;
         orbit.lastY = e.clientY;
     });
-    window.addEventListener("mouseup", () => { orbit.dragging = false; });
+    window.addEventListener("mouseup", () => {
+        orbit.dragging = false;
+    });
     window.addEventListener("mousemove", (e) => {
         if (!orbit.dragging)
             return;
-        const dx = e.clientX - orbit.lastX;
-        const dy = e.clientY - orbit.lastY;
+        const dx = e.clientX - orbit.lastX, dy = e.clientY - orbit.lastY;
         orbit.lastX = e.clientX;
         orbit.lastY = e.clientY;
         orbit.yaw += dx * orbit.rotateSpeed;
@@ -11738,7 +12122,7 @@ function main() {
     });
     canvas.addEventListener("wheel", (e) => {
         e.preventDefault();
-        orbit.radius *= (1.0 + Math.sign(e.deltaY) * orbit.zoomSpeed * 0.1);
+        orbit.radius *= 1.0 + Math.sign(e.deltaY) * orbit.zoomSpeed * 0.1;
         orbit.radius = Math.max(orbit.minRadius, Math.min(orbit.maxRadius, orbit.radius));
     }, { passive: false });
     // Mouse NDC for deformation
@@ -11778,12 +12162,19 @@ function main() {
         mouseStrength: U("u_MouseStrength"),
         mouseFalloff: U("u_MouseFalloff"),
         mouseOn: U("u_MouseOn"),
+        // audio
+        audioBass: U("u_AudioBass"),
+        audioMid: U("u_AudioMid"),
+        audioTreble: U("u_AudioTreble"),
+        audioBeat: U("u_AudioBeat"),
         pass: U("u_Pass"),
     };
     // ---------------- GUI ----------------
     gui = new dat_gui__WEBPACK_IMPORTED_MODULE_3__.GUI();
     const gGeom = gui.addFolder("Geometry");
-    gGeom.add(controls, "shape", ["square", "icosphere"]).onChange(setActiveShape);
+    gGeom
+        .add(controls, "shape", ["square", "icosphere"])
+        .onChange(setActiveShape);
     gGeom.add(controls, "tesselations", 0, 8).step(1);
     gGeom.add(controls, "sceneScale", 0.15, 1.0).step(0.01).name("Scene Scale");
     folders.push(gGeom);
@@ -11793,16 +12184,25 @@ function main() {
     gCore.add(controls, "coreHiAmp", 0.0, 0.05).step(0.002).name("Tiny Noise");
     folders.push(gCore);
     const gFlame = gui.addFolder("Flames (animated top)");
-    gFlame.add(controls, "flameNoiseScale", 0.5, 4.0).step(0.01).name("Noise Scale");
+    gFlame
+        .add(controls, "flameNoiseScale", 0.5, 4.0)
+        .step(0.01)
+        .name("Noise Scale");
     gFlame.add(controls, "flameHiAmp", 0.0, 0.7).step(0.005).name("fbm Amp");
     gFlame.add(controls, "flameLift", 0.0, 0.7).step(0.005).name("Up Lift");
     gFlame.add(controls, "octaves", 1, 8).step(1).name("fbm Octaves");
-    gFlame.add(controls, "shellOffset", 0.0, 0.5).step(0.005).name("Shell Offset");
+    gFlame
+        .add(controls, "shellOffset", 0.0, 0.5)
+        .step(0.005)
+        .name("Shell Offset");
     const gUp = gFlame.addFolder("Up Direction");
     gUp.add(controls, "upTargetX", -1.0, 1.0).step(0.01);
     gUp.add(controls, "upTargetY", -1.0, 1.0).step(0.01);
     gUp.add(controls, "upTargetZ", -1.0, 1.0).step(0.01);
-    gUp.add(controls, "upCatchupTau", 0.05, 1.5).step(0.01).name("Catch-up τ (s)");
+    gUp
+        .add(controls, "upCatchupTau", 0.05, 1.5)
+        .step(0.01)
+        .name("Catch-up τ (s)");
     folders.push(gFlame, gUp);
     const gLook = gui.addFolder("Look");
     gLook.add(controls, "bandCount", 2, 14).step(1).name("Bands");
@@ -11810,14 +12210,70 @@ function main() {
     gLook.add(controls, "exposure", 0.0, 1.5).step(0.01).name("Exposure");
     folders.push(gLook);
     const gGlow = gui.addFolder("Glow (broad halo)");
-    gGlow.add(controls, "glowStrength", 0.0, 2.0).step(0.01).name("Glow Strength");
-    gGlow.add(controls, "glowOffsetMul", 1.0, 2.5).step(0.01).name("Glow Offset ×");
+    gGlow
+        .add(controls, "glowStrength", 0.0, 2.0)
+        .step(0.01)
+        .name("Glow Strength");
+    gGlow
+        .add(controls, "glowOffsetMul", 1.0, 2.5)
+        .step(0.01)
+        .name("Glow Offset ×");
     folders.push(gGlow);
     const gMouse = gui.addFolder("Mouse Deformation");
     gMouse.add(controls, "mouseOn").name("Enable");
     gMouse.add(controls, "mouseStrength", 0.0, 2.0).step(0.01).name("Strength");
-    gMouse.add(controls, "mouseFalloff", 0.1, 0.8).step(0.01).name("Falloff (NDC)");
+    gMouse
+        .add(controls, "mouseFalloff", 0.1, 0.8)
+        .step(0.01)
+        .name("Falloff (NDC)");
     folders.push(gMouse);
+    // --- Audio React folder ---
+    const gAudio = gui.addFolder("Audio React");
+    gAudio.add(controls, "audioOn").name("Enable");
+    gAudio.add(controls, "smoothing", 0.0, 0.95, 0.01).name("Smoothing");
+    gAudio.add(controls, "sensitivity", 0.7, 2.0, 0.01).name("Beat Sensitivity");
+    gAudio
+        .add(controls, "bassToFlameLift", 0.0, 1.5, 0.01)
+        .name("Bass → FlameLift");
+    gAudio.add(controls, "bassToGlow", 0.0, 2.0, 0.01).name("Bass → Glow");
+    gAudio.add(controls, "midToCoreLow", 0.0, 1.0, 0.01).name("Mid → CoreLow");
+    gAudio
+        .add(controls, "trebleToGrainHi", 0.0, 1.0, 0.01)
+        .name("Treble → Grain");
+    gAudio
+        .add(controls, "beatToExposure", 0.0, 1.0, 0.01)
+        .name("Beat → Exposure");
+    // --- Fireball toggle in GUI ---
+    const gMode = gui.addFolder("Mode");
+    gMode
+        .add(controls, "fireball")
+        .name("🔥 Fireball")
+        .onChange((on) => __awaiter(this, void 0, void 0, function* () {
+        fireballOn = on;
+        if (fireballOn) {
+            // Make the canvas transparent so the video shows behind it
+            renderer.setClearColor(0.0, 0.0, 0.0, 0.0);
+            const canvasEl = document.getElementById("canvas");
+            if (canvasEl) {
+                canvasEl.style.background = "transparent";
+                canvasEl.style.position = "relative";
+            }
+            ensureYTBackground();
+            yield startYouTube();
+            yield startTabAudioCapture();
+        }
+        else {
+            // Restore normal opaque background
+            renderer.setClearColor(0.05, 0.05, 0.06, 1.0);
+            const canvasEl = document.getElementById("canvas");
+            if (canvasEl)
+                canvasEl.style.background = "";
+            stopTabAudioCapture();
+            stopYouTube();
+            if (fbBar)
+                fbBar.style.display = "none";
+        }
+    }));
     const resize = () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
         camera.setAspectRatio(window.innerWidth / window.innerHeight);
@@ -11829,6 +12285,7 @@ function main() {
     const t0 = performance.now();
     let last = t0;
     function tick() {
+        var _a, _b, _c, _d;
         const now = performance.now();
         const dt = Math.max(0, (now - last) * 0.001);
         last = now;
@@ -11838,10 +12295,8 @@ function main() {
         const cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch);
         const cy = Math.cos(orbit.yaw), sy = Math.sin(orbit.yaw);
         const eye = gl_matrix__WEBPACK_IMPORTED_MODULE_1__.fromValues(orbit.radius * cp * sy, orbit.radius * sp, orbit.radius * cp * cy);
-        if (camera.setPosition)
-            camera.setPosition(eye);
-        if (camera.setTarget)
-            camera.setTarget(gl_matrix__WEBPACK_IMPORTED_MODULE_1__.fromValues(0, 0, 0));
+        (_b = (_a = camera).setPosition) === null || _b === void 0 ? void 0 : _b.call(_a, eye);
+        (_d = (_c = camera).setTarget) === null || _d === void 0 ? void 0 : _d.call(_c, gl_matrix__WEBPACK_IMPORTED_MODULE_1__.fromValues(0, 0, 0));
         if (controls.tesselations !== prevTess) {
             prevTess = controls.tesselations;
             icosphere = new _geometry_Icosphere__WEBPACK_IMPORTED_MODULE_4__["default"](gl_matrix__WEBPACK_IMPORTED_MODULE_1__.fromValues(0, 0, 0), 1, prevTess);
@@ -11857,7 +12312,7 @@ function main() {
         gl_matrix__WEBPACK_IMPORTED_MODULE_1__.normalize(upSmooth, upSmooth);
         renderer.clear();
         gl.useProgram(fire.prog);
-        // Shared uniforms
+        // Shared uniforms (base)
         if (uni.time)
             gl.uniform1f(uni.time, t);
         if (uni.oct)
@@ -11903,6 +12358,46 @@ function main() {
             gl.uniform1f(uni.mouseFalloff, controls.mouseFalloff);
         if (uni.mouseOn)
             gl.uniform1i(uni.mouseOn, controls.mouseOn ? 1 : 0);
+        // --- When Fireball is ON, analyse + push audio + CPU-side boosts ---
+        if (fireballOn && controls.audioOn) {
+            // raw audio uniforms to shader
+            if (uni.audioBass)
+                gl.uniform1f(uni.audioBass, aBass);
+            if (uni.audioMid)
+                gl.uniform1f(uni.audioMid, aMid);
+            if (uni.audioTreble)
+                gl.uniform1f(uni.audioTreble, aTre);
+            if (uni.audioBeat)
+                gl.uniform1f(uni.audioBeat, aBeat);
+            updateAudioLevels();
+            // CPU-side modulations
+            const flameLift = controls.flameLift + aBass * controls.bassToFlameLift;
+            const glow = controls.glowStrength + aBass * controls.bassToGlow;
+            const coreLow = controls.coreLowAmp + aMid * controls.midToCoreLow;
+            const grain = controls.grainAmp + aTre * controls.trebleToGrainHi;
+            const exposure = controls.exposure + aBeat * controls.beatToExposure;
+            if (uni.flameLift)
+                gl.uniform1f(uni.flameLift, Math.min(flameLift, 1.8));
+            if (uni.glowStrength)
+                gl.uniform1f(uni.glowStrength, Math.min(glow, 3.0));
+            if (uni.coreLow)
+                gl.uniform1f(uni.coreLow, Math.min(coreLow, 1.0));
+            if (uni.grain)
+                gl.uniform1f(uni.grain, Math.min(grain, 0.6));
+            if (uni.exposure)
+                gl.uniform1f(uni.exposure, Math.min(exposure, 2.0));
+        }
+        else {
+            // When off, zero audio uniforms to avoid stale values
+            if (uni.audioBass)
+                gl.uniform1f(uni.audioBass, 0.0);
+            if (uni.audioMid)
+                gl.uniform1f(uni.audioMid, 0.0);
+            if (uni.audioTreble)
+                gl.uniform1f(uni.audioTreble, 0.0);
+            if (uni.audioBeat)
+                gl.uniform1f(uni.audioBeat, 0.0);
+        }
         camera.update();
         const white = gl_matrix__WEBPACK_IMPORTED_MODULE_2__.fromValues(1, 1, 1, 1);
         const drawables = activeShape ? [activeShape] : [];
